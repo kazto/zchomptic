@@ -1,6 +1,6 @@
-# zcholor
+# zchomptic
 
-A Zig re-implementation of [charmbracelet/bubbles](https://github.com/charmbracelet/bubbles).
+A Zig re-implementation of [charmbracelet/bubbletea](https://github.com/charmbracelet/bubbletea).
 
 ## Requirements
 
