@@ -2,8 +2,12 @@
 /// Converts raw bytes from stdin into Msg values.
 const std = @import("std");
 const posix = std.posix;
+const builtin = @import("builtin");
 const msg = @import("msg.zig");
 const key = @import("key.zig");
+
+// Windows-specific imports
+const windows = if (builtin.os.tag == .windows) std.os.windows else struct {};
 
 /// Parse up to one Msg from the given byte slice.
 /// Returns the Msg and the number of bytes consumed.
@@ -196,6 +200,13 @@ fn parseParamN(params: []const u8, default: u32) u32 {
 
 /// Returns true if stdin has data available within `timeout_ms` milliseconds.
 pub fn pollStdin(timeout_ms: i32) bool {
+    if (builtin.os.tag == .windows) {
+        const h = windows.kernel32.GetStdHandle(windows.STD_INPUT_HANDLE) orelse return false;
+        const res = windows.kernel32.WaitForSingleObject(h, @intCast(timeout_ms));
+        // WAIT_OBJECT_0 = 0, WAIT_TIMEOUT = 258
+        return res == 0;
+    }
+
     var pfd = [1]posix.pollfd{.{
         .fd = posix.STDIN_FILENO,
         .events = posix.POLL.IN,
