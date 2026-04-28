@@ -58,9 +58,9 @@ pub const TerminalState = struct {
 
     /// Query the current terminal dimensions via TIOCGWINSZ.
     pub fn getSize() Size {
-        var ws = std.mem.zeroes(linux.winsize);
-        const rc = linux.ioctl(posix.STDOUT_FILENO, linux.T.IOCGWINSZ, @intFromPtr(&ws));
-        if (rc != 0 or ws.ws_col == 0) return .{ .width = 80, .height = 24 };
-        return .{ .width = ws.ws_col, .height = ws.ws_row };
+        var ws = std.mem.zeroes(std.posix.winsize);
+        const rc = std.posix.system.ioctl(std.posix.STDOUT_FILENO, std.posix.system.T.IOCGWINSZ, @intFromPtr(&ws));
+        if (rc != 0 or ws.col == 0) return .{ .width = 80, .height = 24 };
+        return .{ .width = ws.col, .height = ws.row };
     }
 };
