@@ -122,6 +122,7 @@ pub const Program = struct {
     queue: MsgQueue,
     renderer: renderer_mod.Renderer,
     running: std.atomic.Value(bool),
+    view_buf: std.ArrayListUnmanaged(u8),
 
     pub fn init(allocator: std.mem.Allocator, m: Model) Program {
         return .{
@@ -130,12 +131,14 @@ pub const Program = struct {
             .queue = .{},
             .renderer = renderer_mod.Renderer.init(allocator),
             .running = std.atomic.Value(bool).init(true),
+            .view_buf = .{},
         };
     }
 
     pub fn deinit(self: *Program) void {
         self.queue.deinit(self.allocator);
         self.renderer.deinit();
+        self.view_buf.deinit(self.allocator);
     }
 
     /// Run the event loop. Blocks until the model returns a quit/interrupt Cmd.
@@ -181,10 +184,9 @@ pub const Program = struct {
     // ---- Private helpers ----
 
     fn renderView(self: *Program) !void {
-        var view_buf: [65536]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&view_buf);
-        try self.m.view(fbs.writer().any());
-        self.renderer.render(fbs.getWritten());
+        self.view_buf.clearRetainingCapacity();
+        try self.m.view(self.view_buf.writer(self.allocator).any());
+        self.renderer.render(self.view_buf.items);
     }
 
     fn execCmd(self: *Program, c: Cmd, allocator: std.mem.Allocator) !void {
