@@ -4,11 +4,12 @@ const builtin = @import("builtin");
 const is_windows = builtin.os.tag == .windows;
 
 pub const TerminalState = struct {
+    io: std.Io,
     original_termios: if (is_windows) u32 else posix.termios,
     tty_fd: if (is_windows) std.os.windows.HANDLE else posix.fd_t,
 
     /// Enable raw mode. Returns the previous terminal state.
-    pub fn init() !TerminalState {
+    pub fn init(io: std.Io) !TerminalState {
         if (is_windows) {
             const h = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) orelse return error.GetStdHandleFailed;
             var mode: u32 = undefined;
@@ -38,11 +39,11 @@ pub const TerminalState = struct {
                 _ = std.os.windows.kernel32.SetConsoleMode(h_out, out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
             }
 
-            return .{ .original_termios = mode, .tty_fd = h };
+            return .{ .io = io, .original_termios = mode, .tty_fd = h };
         }
 
         const tty_fd: posix.fd_t = blk: {
-            if (posix.open("/dev/tty", .{ .ACCMODE = .RDWR }, 0)) |fd| {
+            if (posix.openat(posix.AT.FDCWD, "/dev/tty", .{ .ACCMODE = .RDWR }, 0)) |fd| {
                 break :blk fd;
             } else |_| {
                 break :blk posix.STDIN_FILENO;
@@ -76,7 +77,7 @@ pub const TerminalState = struct {
         raw.cc[@intFromEnum(posix.V.TIME)] = 0;
 
         try posix.tcsetattr(tty_fd, .FLUSH, raw);
-        return .{ .original_termios = original, .tty_fd = tty_fd };
+        return .{ .io = io, .original_termios = original, .tty_fd = tty_fd };
     }
 
     /// Restore the original terminal state.
@@ -87,7 +88,8 @@ pub const TerminalState = struct {
         }
         posix.tcsetattr(self.tty_fd, .FLUSH, self.original_termios) catch {};
         if (self.tty_fd != posix.STDIN_FILENO) {
-            posix.close(self.tty_fd);
+            const tty_file: std.Io.File = .{ .handle = self.tty_fd, .flags = .{ .nonblocking = false } };
+            tty_file.close(self.io);
         }
     }
 

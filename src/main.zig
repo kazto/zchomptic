@@ -42,7 +42,7 @@ const Counter = struct {
         return null;
     }
 
-    pub fn view(self: *Counter, writer: std.io.AnyWriter) !void {
+    pub fn view(self: *Counter, writer: *std.Io.Writer) !void {
         try writer.print(
             \\Counter: {d}
             \\
@@ -54,13 +54,13 @@ const Counter = struct {
     }
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     var counter = Counter{};
-    var prog = tea.Program.init(allocator, tea.model(&counter));
+    var prog = tea.Program.init(allocator, init.io, tea.model(&counter));
     defer prog.deinit();
 
     try prog.run();

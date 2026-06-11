@@ -4,13 +4,14 @@
 const std = @import("std");
 
 pub const Renderer = struct {
-    stdout: std.fs.File,
+    io: std.Io,
+    stdout: std.Io.File,
     prev_line_count: usize = 0,
     /// Internal scratch buffer for building escape sequences.
     scratch: [4096]u8 = undefined,
 
-    pub fn init(_: std.mem.Allocator) Renderer {
-        return .{ .stdout = std.fs.File.stdout() };
+    pub fn init(io: std.Io, _: std.mem.Allocator) Renderer {
+        return .{ .io = io, .stdout = .stdout() };
     }
 
     pub fn deinit(_: *Renderer) void {}
@@ -18,30 +19,29 @@ pub const Renderer = struct {
     /// Render the content string to the terminal.
     /// `content` should be plain text with embedded ANSI sequences.
     pub fn render(self: *Renderer, content: []const u8) void {
-        var fbs = std.io.fixedBufferStream(&self.scratch);
-        const w = fbs.writer();
+        var writer: std.Io.Writer = .fixed(&self.scratch);
 
         // Move cursor up by the number of lines rendered last time
         if (self.prev_line_count > 0) {
             for (0..self.prev_line_count) |_| {
-                w.writeAll("\x1b[A") catch return;
+                writer.writeAll("\x1b[A") catch return;
             }
-            w.writeByte('\r') catch return;
+            writer.writeByte('\r') catch return;
         }
 
         // Flush preamble (cursor movements)
-        _ = self.stdout.write(fbs.getWritten()) catch {};
+        self.writeAll(writer.buffered());
 
         // Write new content directly
-        _ = self.stdout.write(content) catch {};
+        self.writeAll(content);
 
         // Ensure content ends with newline
         if (content.len == 0 or content[content.len - 1] != '\n') {
-            _ = self.stdout.write("\n") catch {};
+            self.writeAll("\n");
         }
 
         // Clear from cursor to end of screen
-        _ = self.stdout.write("\x1b[J") catch {};
+        self.writeAll("\x1b[J");
 
         self.prev_line_count = countLines(content);
     }
@@ -50,11 +50,18 @@ pub const Renderer = struct {
     pub fn clear(self: *Renderer) void {
         if (self.prev_line_count > 0) {
             for (0..self.prev_line_count) |_| {
-                _ = self.stdout.write("\x1b[A") catch {};
+                self.writeAll("\x1b[A");
             }
-            _ = self.stdout.write("\r\x1b[J") catch {};
+            self.writeAll("\r\x1b[J");
         }
         self.prev_line_count = 0;
+    }
+
+    fn writeAll(self: *Renderer, bytes: []const u8) void {
+        var buffer: [4096]u8 = undefined;
+        var writer = self.stdout.writerStreaming(self.io, &buffer);
+        writer.interface.writeAll(bytes) catch return;
+        writer.interface.flush() catch {};
     }
 };
 

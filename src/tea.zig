@@ -23,7 +23,7 @@ pub const Model = struct {
         /// Called for every Msg. Mutates internal state in-place. Return a Cmd or null.
         update: *const fn (ctx: *anyopaque, m: Msg) ?Cmd,
         /// Render the current state as a UTF-8 string written to `writer`.
-        view: *const fn (ctx: *anyopaque, writer: std.io.AnyWriter) anyerror!void,
+        view: *const fn (ctx: *anyopaque, writer: *std.Io.Writer) anyerror!void,
     };
 
     pub fn init(self: Model) ?Cmd {
@@ -34,7 +34,7 @@ pub const Model = struct {
         return self.vtable.update(self.ptr, m);
     }
 
-    pub fn view(self: Model, writer: std.io.AnyWriter) !void {
+    pub fn view(self: Model, writer: *std.Io.Writer) !void {
         return self.vtable.view(self.ptr, writer);
     }
 };
@@ -45,7 +45,7 @@ pub const Model = struct {
 /// Expected signatures on T:
 ///   pub fn init(self: *T) ?tea.Cmd
 ///   pub fn update(self: *T, m: tea.Msg) ?tea.Cmd
-///   pub fn view(self: *T, writer: std.io.AnyWriter) anyerror!void
+///   pub fn view(self: *T, writer: *std.Io.Writer) anyerror!void
 pub fn model(ptr: anytype) Model {
     const T = @TypeOf(ptr.*);
     const gen = struct {
@@ -57,7 +57,7 @@ pub fn model(ptr: anytype) Model {
             const self: *T = @ptrCast(@alignCast(ctx));
             return self.update(m);
         }
-        fn viewFn(ctx: *anyopaque, writer: std.io.AnyWriter) anyerror!void {
+        fn viewFn(ctx: *anyopaque, writer: *std.Io.Writer) anyerror!void {
             const self: *T = @ptrCast(@alignCast(ctx));
             return self.view(writer);
         }
@@ -77,38 +77,52 @@ pub fn model(ptr: anytype) Model {
 // ---------------------------------------------------------------------------
 
 const MsgQueue = struct {
-    mutex: std.Thread.Mutex = .{},
-    cond: std.Thread.Condition = .{},
+    locked: std.atomic.Value(bool) = .init(false),
     items: std.ArrayList(Msg) = .empty,
     closed: bool = false,
+
+    fn lock(self: *MsgQueue) void {
+        while (self.locked.swap(true, .acquire)) {
+            std.Thread.yield() catch {};
+        }
+    }
+
+    fn unlock(self: *MsgQueue) void {
+        self.locked.store(false, .release);
+    }
 
     fn deinit(self: *MsgQueue, allocator: std.mem.Allocator) void {
         self.items.deinit(allocator);
     }
 
     fn push(self: *MsgQueue, m: Msg, allocator: std.mem.Allocator) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.lock();
+        defer self.unlock();
         try self.items.append(allocator, m);
-        self.cond.signal();
     }
 
     /// Block until a message is available, then return it.
     fn pop(self: *MsgQueue) ?Msg {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        while (self.items.items.len == 0) {
-            if (self.closed) return null;
-            self.cond.wait(&self.mutex);
+        while (true) {
+            self.lock();
+            if (self.items.items.len > 0) {
+                const msg = self.items.orderedRemove(0);
+                self.unlock();
+                return msg;
+            }
+            if (self.closed) {
+                self.unlock();
+                return null;
+            }
+            self.unlock();
+            std.Thread.yield() catch {};
         }
-        return self.items.orderedRemove(0);
     }
 
     fn close(self: *MsgQueue) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.lock();
+        defer self.unlock();
         self.closed = true;
-        self.cond.broadcast();
     }
 };
 
@@ -119,17 +133,19 @@ const MsgQueue = struct {
 pub const Program = struct {
     m: Model,
     allocator: std.mem.Allocator,
+    io: std.Io,
     queue: MsgQueue,
     renderer: renderer_mod.Renderer,
     running: std.atomic.Value(bool),
     view_buf: std.ArrayListUnmanaged(u8),
 
-    pub fn init(allocator: std.mem.Allocator, m: Model) Program {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, m: Model) Program {
         return .{
             .m = m,
             .allocator = allocator,
+            .io = io,
             .queue = .{},
-            .renderer = renderer_mod.Renderer.init(allocator),
+            .renderer = renderer_mod.Renderer.init(io, allocator),
             .running = std.atomic.Value(bool).init(true),
             .view_buf = .{},
         };
@@ -144,7 +160,7 @@ pub const Program = struct {
     /// Run the event loop. Blocks until the model returns a quit/interrupt Cmd.
     pub fn run(self: *Program) !void {
         // Initialise raw terminal mode
-        const term = try terminal.TerminalState.init();
+        const term = try terminal.TerminalState.init(self.io);
         defer term.deinit();
 
         // Render initial view
@@ -202,7 +218,6 @@ pub const Program = struct {
 // ---------------------------------------------------------------------------
 
 fn inputLoop(prog: *Program) void {
-    const stdin = std.fs.File.stdin();
     var buf: [256]u8 = undefined;
     var msgs: std.ArrayList(Msg) = .empty;
     defer msgs.deinit(prog.allocator);
@@ -211,7 +226,7 @@ fn inputLoop(prog: *Program) void {
         // Poll with 100 ms timeout so the thread can notice `running = false`
         if (!input_mod.pollStdin(100)) continue;
 
-        const n = stdin.read(&buf) catch return;
+        const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return;
         if (n == 0) continue;
 
         msgs.clearRetainingCapacity();
