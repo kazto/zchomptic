@@ -137,7 +137,7 @@ pub const Program = struct {
     queue: MsgQueue,
     renderer: renderer_mod.Renderer,
     running: std.atomic.Value(bool),
-    view_buf: std.ArrayListUnmanaged(u8),
+    view_buf: std.Io.Writer.Allocating,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, m: Model) Program {
         return .{
@@ -147,14 +147,14 @@ pub const Program = struct {
             .queue = .{},
             .renderer = renderer_mod.Renderer.init(io, allocator),
             .running = std.atomic.Value(bool).init(true),
-            .view_buf = .{},
+            .view_buf = .init(allocator),
         };
     }
 
     pub fn deinit(self: *Program) void {
         self.queue.deinit(self.allocator);
         self.renderer.deinit();
-        self.view_buf.deinit(self.allocator);
+        self.view_buf.deinit();
     }
 
     /// Run the event loop. Blocks until the model returns a quit/interrupt Cmd.
@@ -200,9 +200,9 @@ pub const Program = struct {
     // ---- Private helpers ----
 
     fn renderView(self: *Program) !void {
-        self.view_buf.clearRetainingCapacity();
-        try self.m.view(self.view_buf.writer(self.allocator).any());
-        self.renderer.render(self.view_buf.items);
+        self.view_buf.writer.end = 0;
+        try self.m.view(&self.view_buf.writer);
+        self.renderer.render(self.view_buf.writer.buffered());
     }
 
     fn execCmd(self: *Program, c: Cmd, allocator: std.mem.Allocator) !void {
