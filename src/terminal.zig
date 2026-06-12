@@ -11,9 +11,16 @@ pub const TerminalState = struct {
     /// Enable raw mode. Returns the previous terminal state.
     pub fn init(io: std.Io) !TerminalState {
         if (is_windows) {
-            const h = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) orelse return error.GetStdHandleFailed;
-            var mode: u32 = undefined;
-            if (std.os.windows.kernel32.GetConsoleMode(h, &mode) == 0) return error.GetConsoleModeFailed;
+            const K32 = struct {
+                const STD_INPUT_HANDLE: std.os.windows.DWORD = 0xfffffff6;
+                const STD_OUTPUT_HANDLE: std.os.windows.DWORD = 0xfffffff5;
+                extern "kernel32" fn GetStdHandle(nStdHandle: std.os.windows.DWORD) callconv(.winapi) ?std.os.windows.HANDLE;
+                extern "kernel32" fn GetConsoleMode(hConsoleHandle: std.os.windows.HANDLE, lpMode: *std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
+                extern "kernel32" fn SetConsoleMode(hConsoleHandle: std.os.windows.HANDLE, dwMode: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
+            };
+            const h = K32.GetStdHandle(K32.STD_INPUT_HANDLE) orelse return error.GetStdHandleFailed;
+            var mode: std.os.windows.DWORD = undefined;
+            if (!K32.GetConsoleMode(h, &mode).toBool()) return error.GetConsoleModeFailed;
 
             // Win32 Console Mode constants
             const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
@@ -25,18 +32,18 @@ pub const TerminalState = struct {
             // Enable VT processing for ANSI escapes on input if supported
             raw_mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
 
-            if (std.os.windows.kernel32.SetConsoleMode(h, raw_mode) == 0) {
+            if (!K32.SetConsoleMode(h, raw_mode).toBool()) {
                 // If VT input failed, just try without it
                 raw_mode &= ~ENABLE_VIRTUAL_TERMINAL_INPUT;
-                if (std.os.windows.kernel32.SetConsoleMode(h, raw_mode) == 0) return error.SetConsoleModeFailed;
+                if (!K32.SetConsoleMode(h, raw_mode).toBool()) return error.SetConsoleModeFailed;
             }
 
             // Also ensure VT processing is enabled for STDOUT
-            const h_out = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse h;
-            var out_mode: u32 = undefined;
-            if (std.os.windows.kernel32.GetConsoleMode(h_out, &out_mode) != 0) {
+            const h_out = K32.GetStdHandle(K32.STD_OUTPUT_HANDLE) orelse h;
+            var out_mode: std.os.windows.DWORD = undefined;
+            if (K32.GetConsoleMode(h_out, &out_mode).toBool()) {
                 const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
-                _ = std.os.windows.kernel32.SetConsoleMode(h_out, out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+                _ = K32.SetConsoleMode(h_out, out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
             }
 
             return .{ .io = io, .original_termios = mode, .tty_fd = h };
@@ -83,7 +90,10 @@ pub const TerminalState = struct {
     /// Restore the original terminal state.
     pub fn deinit(self: TerminalState) void {
         if (is_windows) {
-            _ = std.os.windows.kernel32.SetConsoleMode(self.tty_fd, self.original_termios);
+            const K32 = struct {
+                extern "kernel32" fn SetConsoleMode(hConsoleHandle: std.os.windows.HANDLE, dwMode: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
+            };
+            _ = K32.SetConsoleMode(self.tty_fd, self.original_termios);
             return;
         }
         posix.tcsetattr(self.tty_fd, .FLUSH, self.original_termios) catch {};
@@ -98,9 +108,27 @@ pub const TerminalState = struct {
     /// Query the current terminal dimensions.
     pub fn getSize() Size {
         if (is_windows) {
-            const h = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse return .{ .width = 80, .height = 24 };
-            var csbi: std.os.windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-            if (std.os.windows.kernel32.GetConsoleScreenBufferInfo(h, &csbi) != 0) {
+            const SMALL_RECT = extern struct {
+                Left: std.os.windows.SHORT,
+                Top: std.os.windows.SHORT,
+                Right: std.os.windows.SHORT,
+                Bottom: std.os.windows.SHORT,
+            };
+            const CONSOLE_SCREEN_BUFFER_INFO = extern struct {
+                dwSize: std.os.windows.COORD,
+                dwCursorPosition: std.os.windows.COORD,
+                wAttributes: std.os.windows.WORD,
+                srWindow: SMALL_RECT,
+                dwMaximumWindowSize: std.os.windows.COORD,
+            };
+            const K32 = struct {
+                const STD_OUTPUT_HANDLE: std.os.windows.DWORD = 0xfffffff5;
+                extern "kernel32" fn GetStdHandle(nStdHandle: std.os.windows.DWORD) callconv(.winapi) ?std.os.windows.HANDLE;
+                extern "kernel32" fn GetConsoleScreenBufferInfo(hConsoleOutput: std.os.windows.HANDLE, lpConsoleScreenBufferInfo: *CONSOLE_SCREEN_BUFFER_INFO) callconv(.winapi) std.os.windows.BOOL;
+            };
+            const h = K32.GetStdHandle(K32.STD_OUTPUT_HANDLE) orelse return .{ .width = 80, .height = 24 };
+            var csbi: CONSOLE_SCREEN_BUFFER_INFO = undefined;
+            if (K32.GetConsoleScreenBufferInfo(h, &csbi).toBool()) {
                 return .{
                     .width = @intCast(csbi.srWindow.Right - csbi.srWindow.Left + 1),
                     .height = @intCast(csbi.srWindow.Bottom - csbi.srWindow.Top + 1),

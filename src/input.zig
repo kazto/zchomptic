@@ -201,8 +201,13 @@ fn parseParamN(params: []const u8, default: u32) u32 {
 /// Returns true if stdin has data available within `timeout_ms` milliseconds.
 pub fn pollStdin(timeout_ms: i32) bool {
     if (builtin.os.tag == .windows) {
-        const h = windows.kernel32.GetStdHandle(windows.STD_INPUT_HANDLE) orelse return false;
-        const res = windows.kernel32.WaitForSingleObject(h, @intCast(timeout_ms));
+        const K32 = struct {
+            const STD_INPUT_HANDLE: windows.DWORD = 0xfffffff6;
+            extern "kernel32" fn GetStdHandle(nStdHandle: windows.DWORD) callconv(.winapi) ?windows.HANDLE;
+            extern "kernel32" fn WaitForSingleObject(hHandle: windows.HANDLE, dwMilliseconds: windows.DWORD) callconv(.winapi) windows.DWORD;
+        };
+        const h = K32.GetStdHandle(K32.STD_INPUT_HANDLE) orelse return false;
+        const res = K32.WaitForSingleObject(h, @intCast(timeout_ms));
         // WAIT_OBJECT_0 = 0, WAIT_TIMEOUT = 258
         return res == 0;
     }
@@ -214,4 +219,26 @@ pub fn pollStdin(timeout_ms: i32) bool {
     }};
     const n = posix.poll(&pfd, timeout_ms) catch return false;
     return n > 0;
+}
+
+/// Read bytes from stdin into buf. Returns the number of bytes read, or 0 on error/EOF.
+pub fn readStdin(buf: []u8) usize {
+    if (builtin.os.tag == .windows) {
+        const K32 = struct {
+            const STD_INPUT_HANDLE: windows.DWORD = 0xfffffff6;
+            extern "kernel32" fn GetStdHandle(nStdHandle: windows.DWORD) callconv(.winapi) ?windows.HANDLE;
+            extern "kernel32" fn ReadFile(
+                hFile: windows.HANDLE,
+                lpBuffer: [*]u8,
+                nNumberOfBytesToRead: windows.DWORD,
+                lpNumberOfBytesRead: *windows.DWORD,
+                lpOverlapped: ?*anyopaque,
+            ) callconv(.winapi) windows.BOOL;
+        };
+        const h = K32.GetStdHandle(K32.STD_INPUT_HANDLE) orelse return 0;
+        var bytes_read: windows.DWORD = 0;
+        if (!K32.ReadFile(h, buf.ptr, @intCast(buf.len), &bytes_read, null).toBool()) return 0;
+        return bytes_read;
+    }
+    return posix.read(posix.STDIN_FILENO, buf) catch 0;
 }

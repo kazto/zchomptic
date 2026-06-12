@@ -226,7 +226,7 @@ fn inputLoop(prog: *Program) void {
         // Poll with 100 ms timeout so the thread can notice `running = false`
         if (!input_mod.pollStdin(100)) continue;
 
-        const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return;
+        const n = input_mod.readStdin(&buf);
         if (n == 0) continue;
 
         msgs.clearRetainingCapacity();
